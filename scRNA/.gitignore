@@ -1,0 +1,10 @@
+data
+.vscode
+*.bin
+*.pth
+*.pt
+env
+outputs
+slurm_logs
+**__pycache__**
+.env
