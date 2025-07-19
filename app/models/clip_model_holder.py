@@ -74,7 +74,7 @@ class ClipModelHolder:
         )
         
         # Load saved weights
-        weights_path = "/home/wojciech/private/parda_v2/model/model-weights"
+        weights_path = "/home/wojciech/private/parda_v2/model/model-weights2"
         if os.path.exists(weights_path):
             print(f"Loading CLIP model weights from {weights_path}")
             checkpoint = torch.load(weights_path, map_location=self.device)

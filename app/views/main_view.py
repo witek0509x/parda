@@ -306,8 +306,15 @@ class MainView(param.Parameterized):
         
         # Setup selection callback
         def selection_callback(attr, old, new):
+            print(f"Selection callback called with new: {new}")
+            adata = self.anndata_model.adata
+
+            adata.obs['selected'] = False
+
             if new:
                 self.selected_cells = [self.source.data['cell_id'][i] for i in new]
+                # Mark selected
+                adata.obs.loc[self.selected_cells, 'selected'] = True
                 self.plot_panel[0] = f"{len(self.selected_cells)} cells selected"
             else:
                 self.selected_cells = []

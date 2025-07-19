@@ -7,3 +7,4 @@ panel>=1.0.0
 bokeh>=2.4.0
 transformers>=4.52.3
 openai>=1.82.0
+dotenv

@@ -1,18 +1,26 @@
 from openai import OpenAI
 from typing import List, Dict, Any, Callable, Optional
 import json
+from app.utils.fact_checker import FactChecker
 
 class ChatAssistant:
     def __init__(self, api_key: str, anndata_model=None):
+        # Store data model first so initialize() can access metadata provider
+        self.anndata_model = anndata_model
+
         self.client = None
         if api_key != '':
             self.set_api_key(api_key)
-        self.messages = []
-        self.visible_messages = []
+
+        self.messages: list[dict] = []
+        self.visible_messages: list[dict] = []
+        # Build initial system prompt (may use metadata)
         self.initialize()
-        self.anndata_model = anndata_model
+        self.fact_checker = FactChecker(self.anndata_model)
+        if self.client:
+            self.fact_checker.set_client(self.client)
         self.functions = [
-            self.get_query_data_function(),
+            # self.get_query_data_function(),
             self.get_highlight_data_function()
         ]
 
@@ -21,12 +29,27 @@ class ChatAssistant:
 
     def set_api_key(self, api_key: str):
         self.client = OpenAI(api_key=api_key)
+        # pass client to fact checker
+        if hasattr(self, 'fact_checker') and self.fact_checker:
+            self.fact_checker.set_client(self.client)
 
     def initialize(self, system_prompt: Optional[str] = None):
-        if system_prompt is None:
-            system_prompt = "You are an AI assistant for analyzing single-cell RNA sequencing data. When provided with cell information, help interpret the biological significance and provide insights."
-        
-        self.messages = [{"role": "system", "content": system_prompt}]
+        base_prompt = (
+            "You are an AI assistant for analyzing single-cell RNA sequencing data. "
+            "When provided with cell information, help interpret the biological significance and provide insights."
+        ) if system_prompt is None else system_prompt
+
+        # Append dataset summary if available
+        provider = getattr(self.anndata_model, "metadata", None) if self.anndata_model else None
+        if provider is not None:
+            try:
+                dataset_summary = provider.dataset_cluster_summaries()
+                base_prompt += "\n\nDataset overview:\n" + dataset_summary
+            except Exception as e:
+                # Fail silently; still usable
+                print("Warning: could not append dataset summary to system prompt:", e)
+
+        self.messages = [{"role": "system", "content": base_prompt}]
         return True
     
     def send_message(self, text: str, cell_ids: List[str] = None,
@@ -107,28 +130,56 @@ class ChatAssistant:
         self.visible_messages.append({"role": "assistant", "content": assistant_response})
         if history_update_handler:
             history_update_handler(self.get_visible_conversation_history())
+
+        # ---------------- Fact checking ----------------
+        validation_results = self.fact_checker.validate_response(assistant_response)
+        if validation_results:
+            summary_lines = []
+            for item in validation_results:
+                outcome = item.get("result", "NOT_VERIFIABLE")
+                if outcome == "TRUE":
+                    status = "valid"
+                elif outcome == "FALSE":
+                    status = "invalid"
+                else:
+                    status = "not verifiable"
+
+                line = f"{item.get('claim')}: {status}"
+                # Append reason if available and not None
+                if item.get("reason"):
+                    line += f" (reason: {item['reason']})"
+                summary_lines.append(line)
+            validation_text = "Fact check:\n" + "\n".join(summary_lines)
+        else:
+            validation_text = "Fact check: No data-related claims detected."
+        self.messages.append({"role": "assistant", "content": validation_text})
+        self.visible_messages.append({"role": "assistant", "content": validation_text})
+        if history_update_handler:
+            history_update_handler(self.get_visible_conversation_history())
+        # -------------------------------------------------
         return assistant_response
 
     def compose_query(self, text: str, cell_ids: List[str] = None):
         user_message = text
 
-        cell_metadata = None
         if cell_ids and self.anndata_model:
-            try:
-                cell_metadata = self.anndata_model.get_cells_metadata_by_id(cell_ids, max_return=10)
-                if cell_metadata and cell_metadata != "No matching cells found.":
-                    user_message += f"\n\nSelected cell metadata:\n{cell_metadata}"
-                else:
-                    user_message += f"\n\nSelected cell IDs: {', '.join(cell_ids)}\n(No metadata available for these cells)"
-            except Exception as e:
-                user_message += f"\n\nSelected cell IDs: {', '.join(cell_ids)}\n(Error retrieving metadata: {str(e)})"
+            provider = getattr(self.anndata_model, "metadata", None)
+            if provider is not None:
+                try:
+                    summary = provider.selection_summary(cell_ids)
+                    user_message += f"\n\nSelected data summary:\n{summary}"
+                except Exception as e:
+                    user_message += f"\n\nSelected cell IDs: {', '.join(cell_ids)}\n(Error summarising selection: {str(e)})"
+            else:
+                user_message += f"\n\nSelected cell IDs: {', '.join(cell_ids)}"
         elif cell_ids:
             user_message += f"\n\nSelected cell IDs: {', '.join(cell_ids)}"
         return user_message
 
     def submit_conversation(self):
         return self.client.chat.completions.create(
-            model="gpt-4.1-mini-2025-04-14",
+            # model="gpt-4.1-mini-2025-04-14",
+            model='gpt-4.1-2025-04-14',
             messages=self.messages,
             tools=self.functions,
             tool_choice="auto"
